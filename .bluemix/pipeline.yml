@@ -47,6 +47,21 @@ stages:
       mv -f /tmp/sample-project.war /opt/cops/apache-tomcat-8.5.5/webapps/
       /opt/cops/apache-tomcat-8.5.5/bin/startup.sh
     type: text_area
+  - name: CONSUL_HOST
+    value: 169.44.13.129
+    type: text
+  - name: CONSUL_TARGET
+    value: sample.service.dc1.consul
+    type: text
+  - name: CONSUL_PORT
+    value: '8600'
+    type: text
+  - name: CONSUL_SERVICE
+    value: sample
+    type: text
+  - name: CONSUL_API
+    value: http://169.44.13.129:8500/v1
+    type: text
   jobs:
   - name: Deploy
     type: deployer
@@ -62,7 +77,24 @@ stages:
       SSH_OPTIONS="-o PreferredAuthentications=publickey -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY_FILE"
       SSH_USER="root"
 
-      echo "$SSH_KEY" > "$SSH_KEY_FILE"
+      #echo "$SSH_KEY" > "$SSH_KEY_FILE"
+      curl $CONSUL_API/kv/${CONSUL_SERVICE}_key |grep Value |cut -d '"' -f 4 |base64 --decode > "$SSH_KEY_FILE"
+      cat $SSH_KEY_FILE
+      #SERVERS=$(dig $CONSUL_HOST -p $CONSUL_PORT $CONSUL_TARGET +short)
+      #SERVERS=$(nslookup $CONSUL_TARGET $CONSUL_HOST -port=$CONSUL_PORT |tail -n +4 |grep Address |cut -d " " -f 2)
+      cat > get_target.py << __EOF__
+      import json
+      import urllib2
+
+      URL = "$CONSUL_CATALOG/catalog/service/$CONSUL_SERVICE"
+
+      res = urllib2.urlopen(URL)
+      data = json.load(res)
+      print ' '.join(map(lambda x: x['Address'], data))
+      __EOF__
+      SERVERS=$(python get_target.py)
+
+      echo "Deploying to: ${SERVERS}"
 
       for SERVER in ${SERVERS};
       do
