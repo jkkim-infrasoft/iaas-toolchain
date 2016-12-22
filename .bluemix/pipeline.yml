@@ -1,4 +1,3 @@
----
 stages:
 - name: Build Stage
   inputs:
@@ -9,13 +8,45 @@ stages:
   - name: Build
     type: builder
     artifact_dir: ''
+    build_type: maven
+    script: |-
+      #!/bin/bash
+      mvn -B package
+- name: Test Stage
+  inputs:
+  - type: job
+    stage: Build Stage
+    job: Build
+    dir_name: null
+  jobs:
+  - name: Test
+    type: tester
+    script: |-
+      #!/bin/bash
+      mvn test
+    enable_tests: true
+    test_file_pattern: target/surefire-reports/TEST-*.xml
 - name: Deploy Stage
   inputs:
   - type: job
     stage: Build Stage
     job: Build
-  triggers:
-  - type: stage
+    dir_name: null
+  properties:
+  - name: SERVERS
+    value: 10.0.0.1
+    type: text_area
+  - name: SSH_KEY
+    value: KEY
+    type: text_area
+  - name: REMOTE_COMMAND
+    value: |-
+      /opt/cops/apache-tomcat-8.5.5/bin/shutdown.sh
+      rm -rf /opt/cops/apache-tomcat-8.5.5/webapps/sample-project
+      mv /tmp/sample-project.war /opt/cops/apache-tomcat-8.5.5/webapps/
+      mv -f /tmp/sample-project.war /opt/cops/apache-tomcat-8.5.5/webapps/
+      /opt/cops/apache-tomcat-8.5.5/bin/startup.sh
+    type: text_area
   jobs:
   - name: Deploy
     type: deployer
@@ -24,8 +55,26 @@ stages:
       organization: ${CF_ORGANIZATION}
       space: ${CF_SPACE}
       application: ${CF_APP}
-    script: |-
+
+    script: |
       #!/bin/bash
-      cf push "${CF_APP}"
-      # View logs
-      # cf logs "${CF_APP}" --recent
+      SSH_KEY_FILE="$(mktemp)"
+      SSH_OPTIONS="-o PreferredAuthentications=publickey -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY_FILE"
+      SSH_USER="root"
+
+      echo "$SSH_KEY" > "$SSH_KEY_FILE"
+
+      for SERVER in ${SERVERS};
+      do
+          echo "server: $SERVER"
+          scp $SSH_OPTIONS ./target/sample-project.war $SSH_USER@$SERVER:/tmp/
+          echo "eval $REMOTE_COMMAND" | ssh $SSH_OPTIONS $SSH_USER@$SERVER 2>/dev/null
+          echo $?
+      done
+
+      rm "$SSH_KEY_FILE"
+hooks:
+- enabled: true
+  label: null
+  ssl_enabled: false
+  url: https://devops-api.ng.bluemix.net/v1/messaging/webhook/publish

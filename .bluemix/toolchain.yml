@@ -13,8 +13,8 @@ required:
 repo:
   service_id: githubpublic
   parameters:
-    repo_name: "{{name}}"
-    repo_url: "{{repository}}"
+    repo_name: "Sample project"
+    repo_url: "https://github.com/jkkim-infrasoft/sample-project"
     type: clone
     has_issues: true
 
