@@ -1,9 +1,13 @@
+---
 stages:
-- name: Build Stage
+- name: BUILD
   inputs:
-  - type: git
+  - url: https://github.com/jkkim-infrasoft/spring-petclinic.git
+    type: git
     branch: master
-    service: ${REPO}
+    dir_name: null
+  triggers:
+  - type: commit
   jobs:
   - name: Build
     type: builder
@@ -11,100 +15,267 @@ stages:
     build_type: maven
     script: |-
       #!/bin/bash
+      export JAVA_HOME=$JAVA8_HOME
       mvn -B package
-- name: Test Stage
+- name: Build Container Image
   inputs:
   - type: job
-    stage: Build Stage
+    stage: BUILD
     job: Build
     dir_name: null
+  triggers:
+  - type: stage
   jobs:
-  - name: Test
-    type: tester
-    script: |-
-      #!/bin/bash
-      mvn test
-    enable_tests: true
-    test_file_pattern: target/surefire-reports/TEST-*.xml
-- name: Deploy Stage
+  - name: Build Container Image
+    type: builder
+    extension_id: ibm.devops.services.pipeline.container.builder
+    target:
+      region_id: ibm:yp:us-south
+      organization: VDInfraPOC
+      space: POC
+    USE_CACHED_LAYERS: 'true'
+    COMMAND: "#!/bin/bash\n\n# copy docker files to target directory\ncp -R src/main/docker/*\
+      \ target/\n\nWORKSPACE=\"${WORKSPACE}/target\"\n\ncd \"${WORKSPACE}\"\n\n# The\
+      \ following colors have been defined to help with presentation of logs: green,\
+      \ red, label_color, no_color.  \nlog_and_echo \"$LABEL\" \"Starting build script\"\
+      \n\n# The IBM Container BM Containers plug-in (cf ic), Git client (git), and\
+      \ IDS Inventory CLI (ids-inv) have been installed.\n# Based on the organization\
+      \ and space selected in the Job credentials are in place for both IBM Container\
+      \ Service and IBM Bluemix \n#####################\n# Run unit tests    #\n#####################\n\
+      log_and_echo \"$LABEL\" \"No unit tests cases have been checked in\"\n\n######################################\n\
+      # Build Container via Dockerfile     #\n######################################\n\
+      \n# REGISTRY_URL=${CCS_REGISTRY_HOST}/${NAMESPACE}\n# FULL_REPOSITORY_NAME=${REGISTRY_URL}/${IMAGE_NAME}:${APPLICATION_VERSION}\n\
+      # If you wish to receive slack notifications, set SLACK_WEBHOOK_PATH as a property\
+      \ on the stage.\n\nif [ -f Dockerfile ]; then \n    log_and_echo \"$LABEL\"\
+      \ \"Building ${FULL_REPOSITORY_NAME}\"\n    ${EXT_DIR}/utilities/sendMessage.sh\
+      \ -l info -m \"New container build requested for ${FULL_REPOSITORY_NAME}\"\n\
+      \    # build image\n    BUILD_COMMAND=\"\"\n    if [ \"${USE_CACHED_LAYERS}\"\
+      \ == \"true\" ]; then \n        BUILD_COMMAND=\"build --pull --tag ${FULL_REPOSITORY_NAME}\
+      \ ${WORKSPACE}\"\n        ice_retry ${BUILD_COMMAND}\n        RESULT=$?\n  \
+      \  else \n        BUILD_COMMAND=\"build --no-cache --tag ${FULL_REPOSITORY_NAME}\
+      \ ${WORKSPACE}\"\n        ice_retry ${BUILD_COMMAND}\n        RESULT=$?\n  \
+      \  fi \n\n    if [ $RESULT -ne 0 ]; then\n        log_and_echo \"$ERROR\" \"\
+      Error building image\"\n        ice_retry info \n        ice_retry images\n\
+      \        ${EXT_DIR}/print_help.sh\n        ${EXT_DIR}/utilities/sendMessage.sh\
+      \ -l bad -m \"Container build of ${FULL_REPOSITORY_NAME} failed. $(get_error_info)\"\
+      \n        exit 1\n    else\n        log_and_echo \"$SUCCESSFUL\" \"Container\
+      \ build of ${FULL_REPOSITORY_NAME} was successful\"\n        ${EXT_DIR}/utilities/sendMessage.sh\
+      \ -l good -m \"Container build of ${FULL_REPOSITORY_NAME} was successful\"\n\
+      \    fi  \nelse \n    log_and_echo \"$ERROR\" \"Dockerfile not found in project\"\
+      \n    ${EXT_DIR}/utilities/sendMessage.sh -l bad -m \"Failed to get Dockerfile.\
+      \ $(get_error_info)\"\n    exit 1\nfi  \n\n######################################################################################\n\
+      # Copy any artifacts that will be needed for deployment and testing to $WORKSPACE\
+      \    #\n######################################################################################\n\
+      echo \"IMAGE_NAME=${FULL_REPOSITORY_NAME}\" >> $ARCHIVE_DIR/build.properties"
+- name: Deploy to IBM Cloud Foundary
   inputs:
   - type: job
-    stage: Build Stage
+    stage: BUILD
     job: Build
     dir_name: null
-  properties:
-  - name: SERVERS
-    value: 10.0.0.1
-    type: text_area
-  - name: SSH_KEY
-    value: KEY
-    type: text_area
-  - name: REMOTE_COMMAND
-    value: |-
-      /opt/cops/apache-tomcat-8.5.5/bin/shutdown.sh
-      rm -rf /opt/cops/apache-tomcat-8.5.5/webapps/sample-project
-      mv /tmp/sample-project.war /opt/cops/apache-tomcat-8.5.5/webapps/
-      mv -f /tmp/sample-project.war /opt/cops/apache-tomcat-8.5.5/webapps/
-      /opt/cops/apache-tomcat-8.5.5/bin/startup.sh
-    type: text_area
-  - name: CONSUL_HOST
-    value: 169.44.13.129
-    type: text
-  - name: CONSUL_TARGET
-    value: sample.service.dc1.consul
-    type: text
-  - name: CONSUL_PORT
-    value: '8600'
-    type: text
-  - name: CONSUL_SERVICE
-    value: sample
-    type: text
-  - name: CONSUL_API
-    value: http://169.44.13.129:8500/v1
-    type: text
+  triggers:
+  - type: stage
   jobs:
   - name: Deploy
     type: deployer
     target:
-      region_id: ${CF_REGION_ID}
-      organization: ${CF_ORGANIZATION}
-      space: ${CF_SPACE}
-      application: ${CF_APP}
-
+      region_id: ibm:yp:us-south
+      organization: VDInfraPOC
+      space: POC
+      application: jkkim-tomcat-test
     script: |
       #!/bin/bash
-      SSH_KEY_FILE="$(mktemp)"
-      SSH_OPTIONS="-o PreferredAuthentications=publickey -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i $SSH_KEY_FILE"
-      SSH_USER="root"
+      cf push "${CF_APP}"
+- name: Deploy to IBM Container
+  inputs:
+  - type: job
+    stage: Build Container Image
+    job: Build Container Image
+    dir_name: null
+  triggers:
+  - type: stage
+  jobs:
+  - name: Deploy
+    type: deployer
+    extension_id: ibm.devops.services.pipeline.docker.deploy.ice
+    target:
+      region_id: ibm:yp:us-south
+      organization: VDInfraPOC
+      space: POC
+    PORT: '80'
+    DEPLOY_TYPE: red_black
+    CONTAINER_NAME: jkkim-tomcat-test
+    COMMAND: "#!/bin/bash\n# The following are some example deployment scripts.  Use\
+      \ these as is or fork them and include your updates here:\necho -e \"${label_color}Starting\
+      \ deployment script${no_color}\"\n\n\n# To view/fork this script goto: https://github.com/Osthanes/deployscripts\n\
+      # git_retry will retry git calls to prevent pipeline failure on temporary github\
+      \ problems\n# the code can be found in git_util.sh at https://github.com/Osthanes/container_deployer\n\
+      git_retry clone https://github.com/Osthanes/deployscripts.git deployscripts\n\
+      \n\n# You can deploy your Image as either a single Container or as a Container\
+      \ \n# Group.  A Container Group deploys a number of containers to enhance\n\
+      # scalability or reliability.  By default we will deploy as a single \n# container.\
+      \  To switch to a group deploy, comment out the line below\n# containing deploycontainer.sh\
+      \ and uncomment the line for deploygroup.sh\n\n# Deploy with containers:\n#\
+      \ Optional environment properties (can be set directly in this script, or defined\
+      \ as environment properties):\n#      NAME              Value         Description\n\
+      #   =============      =========     ==============\n#   BIND_TO           \
+      \  String       Specify a Bluemix application name that whose bound services\
+      \ you wish to make available to the container.  By default this is not set.\n\
+      #   CONTAINER_SIZE      String       Specify container size: pico (64), nano\
+      \ (128), micro (256), tiny (512), small (1024), medium (2048),\n#          \
+      \                                                  large (4096), x-large (8192),\
+      \ 2x-large (16384).\n#                                    Default is micro (256).\n\
+      #   CONCURRENT_VERSIONS Number       Number of versions of this container to\
+      \ leave active.  \n#                                    Default is 1\n#\n/bin/bash\
+      \ deployscripts/deploycontainer.sh\n\n# Deploy Container Group:\n# Optional\
+      \ environment properties (can be set directly in this script, or defined as\
+      \ environment properties):\n#      NAME              Value         Description\n\
+      #   =============      =========     ==============\n#   ROUTE_HOSTNAME    \
+      \  String       Specify the Hostname for the Cloud Foundry Route you wish to\
+      \ assign to this container group.  By default this is not set.\n#   ROUTE_DOMAIN\
+      \        String       Specify domain name for the Cloud Foundry Route you wish\
+      \ to assign to this container group.  By default this is not set.\n#   BIND_TO\
+      \             String       Specify a Bluemix application name that whose bound\
+      \ services you wish to make available to the container.  By default this is\
+      \ not set.\n#   DESIRED_INSTANCES:  Number       Specify the number of instances\
+      \ in the group.  Default value is 1.\n#   AUTO_RECOVERY:      Boolean      Set\
+      \ auto-recovery to true/false.  Default value is false.\n\n#               \
+      \                     Default is false.\n#   CONTAINER_SIZE      String    \
+      \   Specify container size: pico (64), nano (128), micro (256), tiny (512),\
+      \ small (1024), medium (2048),\n#                                          \
+      \                  large (4096), x-large (8192), 2x-large (16384).\n#      \
+      \                              Default is micro (256).\n#   CONCURRENT_VERSIONS\
+      \ Number       Number of versions of this group to leave active.\n#        \
+      \                            Default is 1\n# IF YOU WANT CONTAINER GROUPS ..\
+      \ uncomment the next line, and comment out the previous deployment line (/bin/bash\
+      \ deployscripts/deploygroup.sh)\n#/bin/bash deployscripts/deploygroup.sh\n\n\
+      RESULT=$?\n\n# source the deploy property file\nif [ -f \"${DEPLOY_PROPERTY_FILE}\"\
+      \ ]; then\n  source \"$DEPLOY_PROPERTY_FILE\"\nfi\n\n#########################\n\
+      # Environment DETAILS   #\n#########################\n# The environment has\
+      \ been setup.\n# The Cloud Foundry CLI (cf), IBM Container Service CLI (ice),\
+      \ Git client (git), IDS Inventory CLI (ids-inv) and Python 2.7.3 (python) have\
+      \ been installed.\n# Based on the organization and space selected in the Job\
+      \ credentials are in place for both IBM Container Service and IBM Bluemix\n\n\
+      # The following colors have been defined to help with presentation of logs:\
+      \ green, red, label_color, no_color.\nif [ $RESULT -ne 0 ]; then\n    echo -e\
+      \ \"${red}Executed failed or had warnings ${no_color}\"\n    ${EXT_DIR}/print_help.sh\n\
+      \    exit $RESULT\nfi\necho -e \"${green}Execution complete${no_label}\""
+- name: Deploy to CoreOS
+  inputs:
+  - type: job
+    stage: Build Container Image
+    job: Build Container Image
+    dir_name: null
+  triggers:
+  - type: stage
+  properties:
+  - name: CA
+    value: |-
+      -----BEGIN CERTIFICATE-----
+      MIIC+zCCAeOgAwIBAgIJAIUuBBsSYbqQMA0GCSqGSIb3DQEBCwUAMBQxEjAQBgNV
+      BAMMCURvY2tlciBDQTAeFw0xNzAxMTgwMTI2MDFaFw0yNzAxMTYwMTI2MDFaMBQx
+      EjAQBgNVBAMMCURvY2tlciBDQTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoC
+      ggEBAMRfH5rqqBdhBirPiR/H/qEwIbNEgjfE0B5Yg57j3mas2y11UXBVhMym1uo9
+      dIVBQlgg2Ajn/cftLmrbEq/kn+h27XeoUghhRzuVoG60duhsNK3LLXPsW5LpoMjz
+      MgmcjJUeqoQyvEY4gWiwq/mxgACDpXMyWxxOVMuMB+moIJ3rRpKWCm2+DKtzqPKG
+      9VS5E9YpV/9Zpx87CWNanc3A19/t2OiyAUPDv24l4LBh1r3Y4FElO+LvTnX8vBrs
+      Zr6LKLTUegBYD8EuumhLR8OzhWfmXzrCoa+sYYk+r/3RSxq8PuvKYwcpFJAQiE9a
+      WBxHnLe/wgUHjACdb9JVGHshlTsCAwEAAaNQME4wHQYDVR0OBBYEFPrq6h6rasdo
+      qabI3TnuvaxVEAw7MB8GA1UdIwQYMBaAFPrq6h6rasdoqabI3TnuvaxVEAw7MAwG
+      A1UdEwQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAHMu2+VGdzYF0mbwG4NYmXZ0
+      k4LkTAq8NVMfmVRd1igXXt6jO9uJkWyjO9alyR/OVyZouip3dzS5n4bS+fxvApDk
+      VLeCaH9UnEetrTV7RfcMS9Pfqqby5+l5ODcbxaB0c5YjGT2hiocuOkfUawFuc+yo
+      IjdbaEhCzTGhbY911wS/XH2cDLVJHiZTS5owQETSzDbkOzmpU37VV2FuIHXGcvLo
+      DDZGEIfsDOLELfHN79jaXORBfalaj06WQjxUmMaj0G1QYqlwa9xrjhOBLXO5Vzbc
+      /KQgIJMsv0XS5lVlEp1l5LhzOc7adYFuwjcBCi0V/65KOiPFNhv+FdgE7S+0MMo=
+      -----END CERTIFICATE-----
+    type: text_area
+  - name: CERT
+    value: |-
+      -----BEGIN CERTIFICATE-----
+      MIIC9zCCAd+gAwIBAgIJAJFP0AUCKh8/MA0GCSqGSIb3DQEBCwUAMBQxEjAQBgNV
+      BAMMCURvY2tlciBDQTAeFw0xNzAxMTgwMTMyNTdaFw0yNzAxMTYwMTMyNTdaMCcx
+      JTAjBgNVBAMMHEJsdWVtaXggRGV2T3BzIERvY2tlciBDbGllbnQwggEiMA0GCSqG
+      SIb3DQEBAQUAA4IBDwAwggEKAoIBAQDxSWd1zXNPB7ZlzKiGgJknfrbF/7PvnlbG
+      JngRwfxZeYQSMGxqqHoHAgtMb9rM0usxO2sPXt6JVcd0E203ehUUMDbumoIPVDFq
+      VdmDe13IYUMsBpyqKQ3w6SdGhvyO5lpUfbeQRBcacUvUVGnLowVQzb187mKplvA7
+      HJditmGYhxbUMTiPyg7bZciafwlCqBadpd1o9jxQcSU0fGQPtr3bWQ4vRhHVak02
+      JL55tnVWEiuIBq0qdtE9ZLiy6Lb/87yiniq1m7R6tTAoq3mlJ/ID8hEtyoiSQA9h
+      pYakN4vA86FbbwX26SxFcnKdGbrPZ1NF1mSwlYWIag/xtu0aT1jfAgMBAAGjOTA3
+      MAkGA1UdEwQCMAAwCwYDVR0PBAQDAgXgMB0GA1UdJQQWMBQGCCsGAQUFBwMBBggr
+      BgEFBQcDAjANBgkqhkiG9w0BAQsFAAOCAQEAgJi2q3zJ0lBfdWf7AUtnbDNbraQR
+      Qw0jvnz/+040GPDaVclhaVECfrqkSR8Kmk8S8nqgV0xTrzjY9YUD9IM2ia8Y/eKz
+      wcHwlUgzAwBox2UzCnH3xEDvCzkogpFCOlAADKthy3KhhZv4WDRKySUMA090HQ5Y
+      t9GfEIqE4ih6Rri51Y7qEYJlqNPuCRTlDMc0MLDa//mf2e8uqKWfEdBdWydEnjDJ
+      leY8mJh5QNYhmM1vMxZN2TfDNiInZxKAJpF0YgZ+R0FKEVt4r8lHf/ZJ9IffJJrM
+      s+q0FnVolxOc2GOX8LoAQYXMBARNhzuH1XKT6hIkvJmt0ysuCtEovcGN2A==
+      -----END CERTIFICATE-----
+    type: text_area
+  - name: KEY
+    value: |-
+      -----BEGIN RSA PRIVATE KEY-----
+      MIIEpAIBAAKCAQEA8Ulndc1zTwe2ZcyohoCZJ362xf+z755WxiZ4EcH8WXmEEjBs
+      aqh6BwILTG/azNLrMTtrD17eiVXHdBNtN3oVFDA27pqCD1QxalXZg3tdyGFDLAac
+      qikN8OknRob8juZaVH23kEQXGnFL1FRpy6MFUM29fO5iqZbwOxyXYrZhmIcW1DE4
+      j8oO22XImn8JQqgWnaXdaPY8UHElNHxkD7a921kOL0YR1WpNNiS+ebZ1VhIriAat
+      KnbRPWS4sui2//O8op4qtZu0erUwKKt5pSfyA/IRLcqIkkAPYaWGpDeLwPOhW28F
+      9uksRXJynRm6z2dTRdZksJWFiGoP8bbtGk9Y3wIDAQABAoIBAQDKPhCuOSrxjzFf
+      Wo/XTWsSI6/nflDABCQPqqbxm3t9M9FzvYriS50cyqXVx9vJ2vCwL3GpTIeS7Ydk
+      z/O3kGiip1cj3/YsCxHwY00SXBFbp8q52EDwj8DTsVnuT67ZyFLmhwmZrrj+vQAm
+      VSroORh3hjvRv66LH6z0nx506xIa2V+mVihR0G32LJN6MR3+NNeHxEt42RYqAQXr
+      En+lwLBSADcYCo5hR1boEohdJIwSObDe0HkuFsyoKma5d/FJJKhMRvgwUEoJfZlW
+      Yb4gSotl8EEa5lbJQocCKw70uIUbMBVWGGn3qWQlOtO3QRn1maYxvRTEmUQlUyQE
+      emWUUVeBAoGBAPwVpPTnjf8ExTAXh69wVGuahn1qgnyaWtK7CMwIZ2c5yuoR6vtH
+      OsQpGSNcWXE272JJweL9xg66LjdVoGtQ+UTjF4VWWHOLw7lW1qsPJ9DxnMcVkg+K
+      SbsPqjwjz75nWjvPc/BYlhtqJ/9MP27K6tL1lWQn4kSLQxmAQzJ5BktRAoGBAPUI
+      0yT+EvC7kSv4LfM993qip67lnpKHeCIQDVWD9lXkO3/Y0q3PpUqH8LRgBSeCJl6T
+      ZZ3yFSFKFPmVECw2SThh23FZCMim4L+YWJRXXOOvDTVQRwFM5DCxkG8rf0NQJH69
+      Valxa7XgDJNoBRw1dWsj0QzBOsWqQgrIU9yQI/UvAoGBAIA5okbQ4fGuQ39K+MHM
+      qaRyXaa93tHy0fAPI1Jlk/N1+jlGE/jtKn9NSHQsLXLhNrMQQYds/qnPGmMbMxZj
+      gegAe55fZW6g0VYdTeSFOQOXYuABoOI2vXphZX5h2PJJMCTsSVUgOnqHbQD3j+yT
+      Ww8jzHG9t+KV0/PMwmGSHhmBAoGAGOWrpo+WVxWH26Lc8GE0eyZ5yUCViyfuoe9l
+      m3HMHtAQ552dUoHNtrP3ViyHeYs04NkzMwg882P2m6F0wjlF2U/AH1U/mjuyjGUr
+      Yu85hfzsZ6VfgZdRfE0ect1Fkg5blvEf+haHLjS0smmYU1RvONKr1BLyKNFy4muW
+      ccvHi4sCgYAs49nG990OdNPfPsA+Jhhv7NmjS0oXhUOA9efA7NS+paFvJ3EMXkBW
+      nc2NLWQR7I8Pg0QGm566lv+3hQS+yDLxo4EWSOt5U5QmfCfv9Ueqg+JKT6/arcFe
+      MIR+wL6iF1+Qu79asG5BxeH0yPQo32F7+GQs78fX8BrlwUkRWeXsmg==
+      -----END RSA PRIVATE KEY-----
+    type: text_area
+  - name: TARGET
+    value: tcp://169.54.208.76:8443
+    type: text_area
+  jobs:
+  - name: Deploy
+    type: deployer
+    extension_id: ibm.devops.services.pipeline.docker.deploy.ice
+    target:
+      region_id: ibm:yp:us-south
+      organization: VDInfraPOC
+      space: POC
+    PORT: '80'
+    CONTAINER_NAME: jkkim-tomcat-test
+    DEPLOY_TYPE: red_black
+    COMMAND: |-
+      #!/bin/bash
 
-      #echo "$SSH_KEY" > "$SSH_KEY_FILE"
-      curl $CONSUL_API/kv/${CONSUL_SERVICE}_key |grep Value |cut -d '"' -f 4 |base64 --decode > "$SSH_KEY_FILE"
-      cat $SSH_KEY_FILE
-      #SERVERS=$(dig $CONSUL_HOST -p $CONSUL_PORT $CONSUL_TARGET +short)
-      #SERVERS=$(nslookup $CONSUL_TARGET $CONSUL_HOST -port=$CONSUL_PORT |tail -n +4 |grep Address |cut -d " " -f 2)
-      cat > get_target.py << __EOF__
-      import json
-      import urllib2
+      export DOCKER_CERT_PATH="/tmp/cert/"
+      export DOCKER_HOST="$TARGET"
+      export DOCKER_TLS_VERIFY="1"
 
-      URL = "$CONSUL_CATALOG/catalog/service/$CONSUL_SERVICE"
+      mkdir -p "$DOCKER_CERT_PATH"
 
-      res = urllib2.urlopen(URL)
-      data = json.load(res)
-      print ' '.join(map(lambda x: x['Address'], data))
-      __EOF__
-      SERVERS=$(python get_target.py)
+      echo "$CA" > "$DOCKER_CERT_PATH/ca.pem"
+      echo "$CERT" > "$DOCKER_CERT_PATH/cert.pem"
+      echo "$KEY" > "$DOCKER_CERT_PATH/key.pem"
 
-      echo "Deploying to: ${SERVERS}"
+      docker login -u "$(echo $TOOLCHAIN_TOKEN | cut -d ' ' -f 1)" \
+                   -p "$(echo $TOOLCHAIN_TOKEN | cut -d ' ' -f 2)|$PIPELINE_ORGANIZATION_ID" \
+                   --email "$BLUEMIX_USER" registry.ng.bluemix.net
+      docker pull "$IMAGE_NAME"
 
-      for SERVER in ${SERVERS};
-      do
-          echo "server: $SERVER"
-          scp $SSH_OPTIONS ./target/sample-project.war $SSH_USER@$SERVER:/tmp/
-          echo "eval $REMOTE_COMMAND" | ssh $SSH_OPTIONS $SSH_USER@$SERVER 2>/dev/null
-          echo $?
-      done
-
-      rm "$SSH_KEY_FILE"
+      docker kill "$CONTAINER_NAME" || true
+      docker rm "$CONTAINER_NAME" || true
+      docker run -d -p "$PORT:$PORT" --name "$CONTAINER_NAME" -t "$IMAGE_NAME"
 hooks:
 - enabled: true
   label: null
